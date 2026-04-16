@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chinese Vocab Flashcards</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="panel hero">
+        <div>
+          <p class="eyebrow">Chinese Vocab Flashcards</p>
+          <h1>Study Hanzi, pinyin, and English with importable decks.</h1>
+          <p class="intro">
+            Import a CSV table with columns for hanzi, pinyin, and English. The
+            front of each card shows the Chinese word, and the back shows the
+            pinyin with tone marks plus the English translation.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button id="loadSampleBtn" class="secondary-btn" type="button">
+            Load Sample Deck
+          </button>
+          <button id="clearDeckBtn" class="ghost-btn" type="button">
+            Clear Saved Deck
+          </button>
+        </div>
+      </section>
+
+      <section class="grid-layout">
+        <aside class="panel controls-panel">
+          <h2>Import CSV</h2>
+          <p class="small-copy">
+            Supported headers include <code>hanzi</code>, <code>pinyin</code>,
+            and <code>english</code>. Aliases like <code>chinese</code>,
+            <code>translation</code>, and <code>meaning</code> also work.
+          </p>
+
+          <label class="upload-label" for="csvFileInput">
+            <span>Select a CSV file</span>
+            <input id="csvFileInput" type="file" accept=".csv,text/csv" />
+          </label>
+
+          <div class="divider">
+            <span>or paste CSV data</span>
+          </div>
+
+          <label class="textarea-label" for="csvTextInput">CSV content</label>
+          <textarea
+            id="csvTextInput"
+            rows="12"
+            placeholder="hanzi,pinyin,english&#10;你好,nǐ hǎo,hello&#10;谢谢,xiè xie,thank you"
+          ></textarea>
+
+          <div class="button-row">
+            <button id="importTextBtn" type="button">Import Text</button>
+            <button id="shuffleBtn" class="secondary-btn" type="button">
+              Shuffle Deck
+            </button>
+          </div>
+
+          <section class="format-panel">
+            <h3>CSV format</h3>
+            <pre>hanzi,pinyin,english
+你好,nǐ hǎo,hello
+学生,xué sheng,student
+老师,lǎo shī,teacher</pre>
+          </section>
+
+          <p id="statusMessage" class="status-message" aria-live="polite"></p>
+        </aside>
+
+        <section class="panel study-panel">
+          <div class="study-header">
+            <div>
+              <h2>Your Deck</h2>
+              <p id="deckSummary" class="small-copy">
+                No cards loaded yet.
+              </p>
+            </div>
+
+            <label class="toggle-row">
+              <input id="autoFlipBackCheckbox" type="checkbox" checked />
+              <span>Show card front first after next/prev</span>
+            </label>
+          </div>
+
+          <div class="stats-row">
+            <div class="stat">
+              <span class="stat-label">Cards</span>
+              <strong id="cardCount">0</strong>
+            </div>
+            <div class="stat">
+              <span class="stat-label">Current</span>
+              <strong id="cardPosition">0 / 0</strong>
+            </div>
+            <div class="stat">
+              <span class="stat-label">Side</span>
+              <strong id="cardSide">Front</strong>
+            </div>
+          </div>
+
+          <button id="flashcard" class="flashcard is-empty" type="button">
+            <span id="flashcardLabel" class="flashcard-label">
+              Import a deck to start studying.
+            </span>
+            <span id="flashcardSubLabel" class="flashcard-sub-label">
+              Your Hanzi will appear on the front of the card.
+            </span>
+          </button>
+
+          <div class="button-row study-actions">
+            <button id="prevBtn" class="secondary-btn" type="button">
+              Previous
+            </button>
+            <button id="flipBtn" type="button">Flip Card</button>
+            <button id="nextBtn" class="secondary-btn" type="button">
+              Next
+            </button>
+          </div>
+
+          <section class="deck-table-wrap">
+            <div class="deck-table-header">
+              <h3>Deck Preview</h3>
+              <button id="exportBtn" class="ghost-btn" type="button">
+                Export Current Deck
+              </button>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Hanzi</th>
+                    <th>Pinyin</th>
+                    <th>English</th>
+                  </tr>
+                </thead>
+                <tbody id="deckTableBody">
+                  <tr>
+                    <td colspan="3" class="empty-row">
+                      No cards imported yet.
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
