@@ -1,0 +1,1255 @@
+const STORAGE_KEY = "chinese-flashcards-deck";
+const CSV_TEXT_STORAGE_KEY = "chinese-flashcards-csv-text";
+const THEME_STORAGE_KEY = "chinese-flashcards-theme";
+const ORIGINAL_ORDER_STORAGE_KEY = "chinese-flashcards-original-order";
+
+const SAMPLE_DECK = [
+  { hanzi: "你好", pinyin: "nǐ hǎo", english: "hello" },
+  { hanzi: "谢谢", pinyin: "xiè xie", english: "thank you" },
+  { hanzi: "再见", pinyin: "zài jiàn", english: "goodbye" },
+  { hanzi: "老师", pinyin: "lǎo shī", english: "teacher" },
+  { hanzi: "学生", pinyin: "xué sheng", english: "student" }
+];
+
+const state = {
+  cards: [],
+  originalCards: [],
+  currentIndex: 0,
+  showingBack: false
+};
+
+const swipeState = {
+  startX: 0,
+  startY: 0,
+  active: false
+};
+
+const elements = {
+  csvFileInput: document.getElementById("csvFileInput"),
+  csvTextInput: document.getElementById("csvTextInput"),
+  importTextBtn: document.getElementById("importTextBtn"),
+  loadSampleBtn: document.getElementById("loadSampleBtn"),
+  themeToggleBtn: document.getElementById("themeToggleBtn"),
+  clearDeckBtn: document.getElementById("clearDeckBtn"),
+  shuffleBtn: document.getElementById("shuffleBtn"),
+  restoreOrderBtn: document.getElementById("restoreOrderBtn"),
+  exportBtn: document.getElementById("exportBtn"),
+  prevBtn: document.getElementById("prevBtn"),
+  nextBtn: document.getElementById("nextBtn"),
+  flipBtn: document.getElementById("flipBtn"),
+  flashcard: document.getElementById("flashcard"),
+  flashcardLabel: document.getElementById("flashcardLabel"),
+  flashcardSubLabel: document.getElementById("flashcardSubLabel"),
+  deckSummary: document.getElementById("deckSummary"),
+  cardCount: document.getElementById("cardCount"),
+  cardPosition: document.getElementById("cardPosition"),
+  cardSide: document.getElementById("cardSide"),
+  statusMessage: document.getElementById("statusMessage"),
+  deckTableBody: document.getElementById("deckTableBody"),
+  autoFlipBackCheckbox: document.getElementById("autoFlipBackCheckbox")
+};
+
+function normalizeHeader(header) {
+  return header.trim().toLowerCase().replace(/\s+/g, "");
+}
+
+function parseCsv(text) {
+  const rows = [];
+  let currentRow = [];
+  let currentField = "";
+  let insideQuotes = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const nextChar = text[index + 1];
+
+    if (char === '"') {
+      if (insideQuotes && nextChar === '"') {
+        currentField += '"';
+        index += 1;
+      } else {
+        insideQuotes = !insideQuotes;
+      }
+    } else if (char === "," && !insideQuotes) {
+      currentRow.push(currentField);
+      currentField = "";
+    } else if ((char === "\n" || char === "\r") && !insideQuotes) {
+      if (char === "\r" && nextChar === "\n") {
+        index += 1;
+      }
+
+      currentRow.push(currentField);
+      if (currentRow.some((field) => field.trim() !== "")) {
+        rows.push(currentRow);
+      }
+      currentRow = [];
+      currentField = "";
+    } else {
+      currentField += char;
+    }
+  }
+
+  currentRow.push(currentField);
+  if (currentRow.some((field) => field.trim() !== "")) {
+    rows.push(currentRow);
+  }
+
+  return rows;
+}
+
+function getColumnIndex(headers, aliases) {
+  return headers.findIndex((header) => aliases.includes(header));
+}
+
+function mapRowsToCards(rows) {
+  if (rows.length < 2) {
+    throw new Error("Your CSV needs a header row and at least one vocab row.");
+  }
+
+  const headers = rows[0].map(normalizeHeader);
+  const hanziIndex = getColumnIndex(headers, ["hanzi", "chinese", "simplified", "traditional"]);
+  const pinyinIndex = getColumnIndex(headers, ["pinyin", "pronunciation", "romanization"]);
+  const englishIndex = getColumnIndex(headers, ["english", "translation", "meaning", "definition"]);
+
+  if (hanziIndex === -1 || pinyinIndex === -1 || englishIndex === -1) {
+    throw new Error(
+      "CSV headers must include columns for hanzi, pinyin, and english (or supported aliases)."
+    );
+  }
+
+  const cards = rows
+    .slice(1)
+    .map((row) => ({
+      hanzi: (row[hanziIndex] || "").trim(),
+      pinyin: (row[pinyinIndex] || "").trim(),
+      english: (row[englishIndex] || "").trim()
+    }))
+    .filter((card) => card.hanzi && card.pinyin && card.english);
+
+  if (!cards.length) {
+    throw new Error("No valid cards were found. Make sure each row has hanzi, pinyin, and english.");
+  }
+
+  return cards;
+}
+
+function saveDeck() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.cards));
+}
+
+function saveOriginalDeckOrder() {
+  localStorage.setItem(ORIGINAL_ORDER_STORAGE_KEY, JSON.stringify(state.originalCards));
+}
+
+function saveCsvText(text) {
+  localStorage.setItem(CSV_TEXT_STORAGE_KEY, text);
+}
+
+function loadSavedDeck() {
+  const saved = localStorage.getItem(STORAGE_KEY);
+  const savedOriginal = localStorage.getItem(ORIGINAL_ORDER_STORAGE_KEY);
+
+  try {
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        state.cards = parsed;
+      }
+    }
+
+    if (savedOriginal) {
+      const parsedOriginal = JSON.parse(savedOriginal);
+      if (Array.isArray(parsedOriginal)) {
+        state.originalCards = parsedOriginal;
+      }
+    } else {
+      state.originalCards = [...state.cards];
+    }
+  } catch (error) {
+    console.error("Unable to restore saved deck.", error);
+  }
+}
+
+function loadSavedCsvText() {
+  const savedText = localStorage.getItem(CSV_TEXT_STORAGE_KEY);
+  if (typeof savedText === "string" && savedText.length > 0) {
+    elements.csvTextInput.value = savedText;
+  }
+}
+
+function setStatus(message, type = "") {
+  elements.statusMessage.textContent = message;
+  elements.statusMessage.className = "status-message";
+
+  if (type) {
+    elements.statusMessage.classList.add(type);
+  }
+}
+
+function applyTheme(theme) {
+  const isDark = theme === "dark";
+  document.body.classList.toggle("dark-theme", isDark);
+  elements.themeToggleBtn.textContent = `Dark Mode: ${isDark ? "On" : "Off"}`;
+}
+
+function loadSavedTheme() {
+  const savedTheme = localStorage.getItem(THEME_STORAGE_KEY);
+  if (savedTheme === "dark" || savedTheme === "light") {
+    applyTheme(savedTheme);
+    return;
+  }
+
+  applyTheme("light");
+}
+
+function toggleTheme() {
+  const darkModeActive = document.body.classList.contains("dark-theme");
+  const nextTheme = darkModeActive ? "light" : "dark";
+  applyTheme(nextTheme);
+  localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+}
+
+function renderDeckTable() {
+  if (!state.cards.length) {
+    elements.deckTableBody.innerHTML = `
+      <tr>
+        <td colspan="3" class="empty-row">No cards imported yet.</td>
+      </tr>
+    `;
+    return;
+  }
+
+  elements.deckTableBody.innerHTML = state.cards
+    .map(
+      (card, index) => `
+        <tr data-card-index="${index}">
+          <td>${escapeHtml(card.hanzi)}</td>
+          <td>${escapeHtml(card.pinyin)}</td>
+          <td>${escapeHtml(card.english)}</td>
+        </tr>
+      `
+    )
+    .join("");
+}
+
+function renderFlashcard() {
+  const card = state.cards[state.currentIndex];
+  const hasCards = Boolean(card);
+
+  elements.flashcard.classList.toggle("is-empty", !hasCards);
+  elements.flashcard.classList.toggle("is-back", hasCards && state.showingBack);
+
+  if (!hasCards) {
+    elements.flashcardLabel.textContent = "Import a deck to start studying.";
+    elements.flashcardSubLabel.textContent = "Your Hanzi will appear on the front of the card.";
+    return;
+  }
+
+  if (state.showingBack) {
+    elements.flashcardLabel.textContent = card.pinyin;
+    elements.flashcardSubLabel.textContent = card.english;
+  } else {
+    elements.flashcardLabel.textContent = card.hanzi;
+    elements.flashcardSubLabel.textContent = "Tap to reveal pinyin and English.";
+  }
+}
+
+function renderMeta() {
+  const total = state.cards.length;
+  const position = total ? `${state.currentIndex + 1} / ${total}` : "0 / 0";
+  const side = state.showingBack ? "Back" : "Front";
+
+  elements.cardCount.textContent = String(total);
+  elements.cardPosition.textContent = position;
+  elements.cardSide.textContent = total ? side : "Front";
+  elements.deckSummary.textContent = total
+    ? `Studying ${total} vocabulary card${total === 1 ? "" : "s"}.`
+    : "No cards loaded yet.";
+
+  const disableStudyControls = total === 0;
+  elements.prevBtn.disabled = disableStudyControls;
+  elements.nextBtn.disabled = disableStudyControls;
+  elements.flipBtn.disabled = disableStudyControls;
+  elements.shuffleBtn.disabled = disableStudyControls;
+  elements.restoreOrderBtn.disabled = disableStudyControls || state.originalCards.length === 0;
+  elements.exportBtn.disabled = disableStudyControls;
+}
+
+function render() {
+  renderFlashcard();
+  renderMeta();
+  renderDeckTable();
+}
+
+function escapeHtml(value) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function mergeCards(existingCards, incomingCards) {
+  const merged = [...existingCards, ...incomingCards];
+  return { merged, addedCount: incomingCards.length };
+}
+
+function importCards(cards, successMessage, options = {}) {
+  const { append = false } = options;
+
+  if (append) {
+    const { merged, addedCount } = mergeCards(state.originalCards, cards);
+    state.originalCards = merged;
+    state.cards = merged;
+    state.currentIndex = Math.max(0, state.cards.length - addedCount);
+    state.showingBack = false;
+    saveOriginalDeckOrder();
+    saveDeck();
+    render();
+    setStatus(`${successMessage} Added ${addedCount} new card${addedCount === 1 ? "" : "s"}.`, "success");
+    return;
+  }
+
+  state.cards = cards;
+  state.originalCards = [...cards];
+  state.currentIndex = 0;
+  state.showingBack = false;
+  saveOriginalDeckOrder();
+  saveDeck();
+  render();
+  setStatus(successMessage, "success");
+}
+
+function importFromText(text) {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    throw new Error("Paste some CSV text before importing.");
+  }
+
+  const cards = mapRowsToCards(parseCsv(trimmed));
+  saveCsvText(text);
+  importCards(cards, `Imported ${cards.length} card${cards.length === 1 ? "" : "s"}.`, { append: true });
+}
+
+function moveCard(direction) {
+  if (!state.cards.length) {
+    return;
+  }
+
+  state.currentIndex = (state.currentIndex + direction + state.cards.length) % state.cards.length;
+
+  if (elements.autoFlipBackCheckbox.checked) {
+    state.showingBack = false;
+  }
+
+  render();
+}
+
+function handleFlashcardTouchStart(event) {
+  const [touch] = event.changedTouches;
+  if (!touch) {
+    return;
+  }
+
+  swipeState.startX = touch.clientX;
+  swipeState.startY = touch.clientY;
+  swipeState.active = true;
+}
+
+function handleFlashcardTouchEnd(event) {
+  if (!swipeState.active || !state.cards.length) {
+    return;
+  }
+
+  const [touch] = event.changedTouches;
+  swipeState.active = false;
+
+  if (!touch) {
+    return;
+  }
+
+  const deltaX = touch.clientX - swipeState.startX;
+  const deltaY = touch.clientY - swipeState.startY;
+  const minSwipeDistance = 40;
+  const maxVerticalDrift = 50;
+
+  if (Math.abs(deltaX) < minSwipeDistance || Math.abs(deltaY) > maxVerticalDrift) {
+    return;
+  }
+
+  if (deltaX < 0) {
+    moveCard(1);
+  } else {
+    moveCard(-1);
+  }
+}
+
+function isTypingTarget(target) {
+  if (!target || !(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  if (target.isContentEditable) {
+    return true;
+  }
+
+  const tagName = target.tagName.toLowerCase();
+  return tagName === "input" || tagName === "textarea" || tagName === "select";
+}
+
+function handleKeyboardShortcuts(event) {
+  if (isTypingTarget(event.target) || !state.cards.length) {
+    return;
+  }
+
+  if (event.key === "ArrowRight") {
+    event.preventDefault();
+    moveCard(1);
+    return;
+  }
+
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    moveCard(-1);
+    return;
+  }
+
+  if (event.key === " " || event.code === "Space") {
+    event.preventDefault();
+    state.showingBack = !state.showingBack;
+    render();
+  }
+}
+
+function jumpToCard(index) {
+  if (!state.cards.length || index < 0 || index >= state.cards.length) {
+    return;
+  }
+
+  state.currentIndex = index;
+  state.showingBack = false;
+  render();
+  elements.flashcard.scrollIntoView({ behavior: "smooth", block: "center" });
+  elements.flashcard.focus({ preventScroll: true });
+}
+
+function shuffleCards() {
+  if (state.cards.length < 2) {
+    setStatus("Add at least 2 cards to shuffle.", "error");
+    return;
+  }
+
+  const currentOrderKey = state.cards
+    .map((card) => `${card.hanzi}|${card.pinyin}|${card.english}`)
+    .join("||");
+
+  let shuffled = [...state.cards];
+  let attempts = 0;
+  const maxAttempts = 6;
+
+  while (attempts < maxAttempts) {
+    shuffled = [...state.cards];
+    for (let index = shuffled.length - 1; index > 0; index -= 1) {
+      const randomIndex = Math.floor(Math.random() * (index + 1));
+      [shuffled[index], shuffled[randomIndex]] = [shuffled[randomIndex], shuffled[index]];
+    }
+
+    const shuffledOrderKey = shuffled
+      .map((card) => `${card.hanzi}|${card.pinyin}|${card.english}`)
+      .join("||");
+
+    if (shuffledOrderKey !== currentOrderKey) {
+      break;
+    }
+
+    attempts += 1;
+  }
+
+  const finalOrderKey = shuffled
+    .map((card) => `${card.hanzi}|${card.pinyin}|${card.english}`)
+    .join("||");
+
+  // Guarantee a visible order change when deck has at least 2 cards.
+  if (finalOrderKey === currentOrderKey && shuffled.length > 1) {
+    [shuffled[0], shuffled[1]] = [shuffled[1], shuffled[0]];
+  }
+
+  state.cards = shuffled;
+  state.currentIndex = 0;
+  state.showingBack = false;
+  saveDeck();
+  render();
+  setStatus("Deck shuffled.", "success");
+}
+
+function restoreOriginalOrder() {
+  if (!state.originalCards.length) {
+    return;
+  }
+
+  state.cards = [...state.originalCards];
+  state.currentIndex = 0;
+  state.showingBack = false;
+  saveDeck();
+  render();
+  setStatus("Deck restored to original import order.", "success");
+}
+
+function exportDeck() {
+  if (!state.cards.length) {
+    return;
+  }
+
+  const lines = ["hanzi,pinyin,english"];
+  state.cards.forEach((card) => {
+    lines.push([card.hanzi, card.pinyin, card.english].map(escapeCsvField).join(","));
+  });
+
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "chinese-flashcards.csv";
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function escapeCsvField(value) {
+  if (/[",\n]/.test(value)) {
+    return `"${value.replaceAll('"', '""')}"`;
+  }
+  return value;
+}
+
+elements.importTextBtn.addEventListener("click", () => {
+  try {
+    importFromText(elements.csvTextInput.value);
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+});
+
+elements.csvFileInput.addEventListener("change", async (event) => {
+  const [file] = event.target.files;
+
+  if (!file) {
+    return;
+  }
+
+  try {
+    const text = await file.text();
+    importFromText(text);
+    elements.csvTextInput.value = text;
+  } catch (error) {
+    setStatus(error.message || "Unable to import CSV file.", "error");
+  }
+});
+
+elements.loadSampleBtn.addEventListener("click", () => {
+  importCards(SAMPLE_DECK, "Sample deck loaded.");
+  elements.csvTextInput.value = `hanzi,pinyin,english
+你好,nǐ hǎo,hello
+谢谢,xiè xie,thank you
+再见,zài jiàn,goodbye
+老师,lǎo shī,teacher
+学生,xué sheng,student`;
+  saveCsvText(elements.csvTextInput.value);
+});
+elements.themeToggleBtn.addEventListener("click", toggleTheme);
+
+elements.clearDeckBtn.addEventListener("click", () => {
+  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(ORIGINAL_ORDER_STORAGE_KEY);
+  localStorage.removeItem(CSV_TEXT_STORAGE_KEY);
+  state.cards = [];
+  state.originalCards = [];
+  state.currentIndex = 0;
+  state.showingBack = false;
+  elements.csvTextInput.value = "";
+  render();
+  setStatus("Saved deck and CSV text cleared.", "success");
+});
+
+elements.csvTextInput.addEventListener("input", () => {
+  saveCsvText(elements.csvTextInput.value);
+});
+elements.deckTableBody.addEventListener("click", (event) => {
+  const row = event.target.closest("tr[data-card-index]");
+  if (!row) {
+    return;
+  }
+
+  const index = Number(row.dataset.cardIndex);
+  if (Number.isNaN(index)) {
+    return;
+  }
+
+  jumpToCard(index);
+});
+
+elements.shuffleBtn.addEventListener("click", shuffleCards);
+elements.restoreOrderBtn.addEventListener("click", restoreOriginalOrder);
+elements.exportBtn.addEventListener("click", exportDeck);
+elements.prevBtn.addEventListener("click", () => moveCard(-1));
+elements.nextBtn.addEventListener("click", () => moveCard(1));
+elements.flipBtn.addEventListener("click", () => {
+  if (!state.cards.length) {
+    return;
+  }
+
+  state.showingBack = !state.showingBack;
+  render();
+});
+elements.flashcard.addEventListener("click", () => {
+  if (!state.cards.length) {
+    return;
+  }
+
+  state.showingBack = !state.showingBack;
+  render();
+});
+elements.flashcard.addEventListener("touchstart", handleFlashcardTouchStart, { passive: true });
+elements.flashcard.addEventListener("touchend", handleFlashcardTouchEnd, { passive: true });
+document.addEventListener("keydown", handleKeyboardShortcuts);
+
+loadSavedDeck();
+loadSavedCsvText();
+loadSavedTheme();
+render();
+
+if (state.cards.length) {
+  setStatus("Restored your saved deck from this browser.", "success");
+}
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chinese Vocab Flashcards</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="panel hero">
+        <div>
+          <p class="eyebrow">Chinese Vocab Flashcards</p>
+          <h1>Study Hanzi, pinyin, and English with importable decks.</h1>
+          <p class="intro">
+            Import a CSV table with columns for hanzi, pinyin, and English. The
+            front of each card shows the Chinese word, and the back shows the
+            pinyin with tone marks plus the English translation.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button id="themeToggleBtn" class="ghost-btn" type="button">
+            Dark Mode: Off
+          </button>
+          <button id="loadSampleBtn" class="secondary-btn" type="button">
+            Load Sample Deck
+          </button>
+          <button id="clearDeckBtn" class="ghost-btn" type="button">
+            Clear Saved Deck
+          </button>
+        </div>
+      </section>
+
+      <section class="grid-layout">
+        <aside class="panel controls-panel">
+          <h2>Import CSV</h2>
+          <p class="small-copy">
+            Supported headers include <code>hanzi</code>, <code>pinyin</code>,
+            and <code>english</code>. Aliases like <code>chinese</code>,
+            <code>translation</code>, and <code>meaning</code> also work.
+          </p>
+
+          <label class="upload-label" for="csvFileInput">
+            <span>Select a CSV file</span>
+            <input id="csvFileInput" type="file" accept=".csv,text/csv" />
+          </label>
+
+          <div class="divider">
+            <span>or paste CSV data</span>
+          </div>
+
+          <label class="textarea-label" for="csvTextInput">CSV content</label>
+          <textarea
+            id="csvTextInput"
+            rows="12"
+            placeholder="hanzi,pinyin,english&#10;你好,nǐ hǎo,hello&#10;谢谢,xiè xie,thank you"
+          ></textarea>
+
+          <div class="button-row">
+            <button id="importTextBtn" type="button">Import Text</button>
+            <button id="shuffleBtn" class="secondary-btn" type="button">
+              Shuffle Deck
+            </button>
+            <button id="restoreOrderBtn" class="secondary-btn" type="button">
+              Restore Original Order
+            </button>
+          </div>
+
+          <section class="format-panel">
+            <h3>CSV format</h3>
+            <pre>hanzi,pinyin,english
+你好,nǐ hǎo,hello
+学生,xué sheng,student
+老师,lǎo shī,teacher</pre>
+          </section>
+
+          <p id="statusMessage" class="status-message" aria-live="polite"></p>
+        </aside>
+
+        <section class="panel study-panel">
+          <div class="study-header">
+            <div>
+              <h2>Your Deck</h2>
+              <p id="deckSummary" class="small-copy">
+                No cards loaded yet.
+              </p>
+            </div>
+
+            <label class="toggle-row">
+              <input id="autoFlipBackCheckbox" type="checkbox" checked />
+              <span>Show card front first after next/prev</span>
+            </label>
+          </div>
+
+          <div class="stats-row">
+            <div class="stat">
+              <span class="stat-label">Cards</span>
+              <strong id="cardCount">0</strong>
+            </div>
+            <div class="stat">
+              <span class="stat-label">Current</span>
+              <strong id="cardPosition">0 / 0</strong>
+            </div>
+            <div class="stat">
+              <span class="stat-label">Side</span>
+              <strong id="cardSide">Front</strong>
+            </div>
+          </div>
+
+          <button id="flashcard" class="flashcard is-empty" type="button">
+            <span id="flashcardLabel" class="flashcard-label">
+              Import a deck to start studying.
+            </span>
+            <span id="flashcardSubLabel" class="flashcard-sub-label">
+              Your Hanzi will appear on the front of the card.
+            </span>
+          </button>
+
+          <div class="button-row study-actions">
+            <button id="prevBtn" class="secondary-btn" type="button">
+              Previous
+            </button>
+            <button id="flipBtn" type="button">Flip Card</button>
+            <button id="nextBtn" class="secondary-btn" type="button">
+              Next
+            </button>
+          </div>
+
+          <section class="deck-table-wrap">
+            <div class="deck-table-header">
+              <h3>Deck Preview</h3>
+              <button id="exportBtn" class="ghost-btn" type="button">
+                Export Current Deck
+              </button>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Hanzi</th>
+                    <th>Pinyin</th>
+                    <th>English</th>
+                  </tr>
+                </thead>
+                <tbody id="deckTableBody">
+                  <tr>
+                    <td colspan="3" class="empty-row">
+                      No cards imported yet.
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
+
+# Chinese Vocab Flashcards
+
+A lightweight browser app for studying Chinese vocabulary with flashcards.
+
+## Features
+
+- Front of card shows Hanzi.
+- Back of card shows pinyin with tone marks and the English translation.
+- Import vocabulary from a CSV file or by pasting CSV text.
+- Save the current deck in browser storage.
+- Shuffle, flip, browse, and export your deck.
+
+## CSV Format
+
+Use a header row with these columns:
+
+```csv
+hanzi,pinyin,english
+你好,nǐ hǎo,hello
+学生,xué sheng,student
+老师,lǎo shī,teacher
+```
+
+The importer also accepts some header aliases:
+
+- `hanzi`: `chinese`, `simplified`, `traditional`
+- `pinyin`: `pronunciation`, `romanization`
+- `english`: `translation`, `meaning`, `definition`
+
+## Run It
+
+Because this app has no dependencies, you can open `index.html` directly in a browser.
+
+If you prefer serving it locally, run:
+
+```bash
+python3 -m http.server 8000
+```
+
+Then visit `http://localhost:8000`.
+
+## Sample Deck
+
+Try importing `sample-vocab.csv` to test the app quickly.
+
+hanzi,pinyin,english
+你好,nǐ hǎo,hello
+谢谢,xiè xie,thank you
+再见,zài jiàn,goodbye
+请,qǐng,please
+对不起,duì bu qǐ,sorry
+老师,lǎo shī,teacher
+学生,xué sheng,student
+朋友,péng you,friend
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+  color: #0f172a;
+}
+
+body.dark-theme {
+  background: linear-gradient(180deg, #020617 0%, #111827 100%);
+  color: #e2e8f0;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  border: 0;
+  border-radius: 14px;
+  padding: 0.8rem 1.1rem;
+  background: #2563eb;
+  color: #ffffff;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.18);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.secondary-btn {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+body.dark-theme .secondary-btn {
+  background: #334155;
+  color: #f8fafc;
+}
+
+.ghost-btn {
+  background: transparent;
+  color: #334155;
+  border: 1px solid #cbd5e1;
+}
+
+body.dark-theme .ghost-btn {
+  color: #e2e8f0;
+  border-color: #475569;
+}
+
+.app-shell {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 3rem;
+}
+
+.grid-layout {
+  display: grid;
+  grid-template-columns: minmax(300px, 360px) 1fr;
+  gap: 1.25rem;
+}
+
+.panel {
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 24px;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(8px);
+}
+
+body.dark-theme .panel {
+  background: rgba(15, 23, 42, 0.9);
+  border-color: rgba(148, 163, 184, 0.35);
+  box-shadow: 0 24px 60px rgba(2, 6, 23, 0.55);
+}
+
+.hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 1.25rem;
+  padding: 1.5rem;
+}
+
+.eyebrow {
+  margin: 0 0 0.45rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #4f46e5;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 0.7rem;
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  line-height: 1.05;
+}
+
+h2 {
+  margin-bottom: 0.6rem;
+}
+
+.intro,
+.small-copy {
+  color: #475569;
+}
+
+body.dark-theme .intro,
+body.dark-theme .small-copy {
+  color: #cbd5e1;
+}
+
+.hero-actions,
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.controls-panel,
+.study-panel {
+  padding: 1.5rem;
+}
+
+.upload-label,
+.textarea-label {
+  display: block;
+  margin-bottom: 0.55rem;
+  font-weight: 600;
+}
+
+.upload-label input {
+  display: block;
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.75rem;
+  border: 1px dashed #94a3b8;
+  border-radius: 16px;
+  background: #f8fafc;
+}
+
+body.dark-theme .upload-label input {
+  background: #0f172a;
+  border-color: #475569;
+  color: #e2e8f0;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 1rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 16px;
+  background: #ffffff;
+  color: #0f172a;
+}
+
+body.dark-theme textarea {
+  background: #0b1220;
+  border-color: #475569;
+  color: #e2e8f0;
+}
+
+.divider {
+  position: relative;
+  margin: 1rem 0;
+  text-align: center;
+  color: #64748b;
+}
+
+body.dark-theme .divider {
+  color: #94a3b8;
+}
+
+.divider::before {
+  content: "";
+  position: absolute;
+  inset: 50% 0 auto;
+  border-top: 1px solid #e2e8f0;
+  z-index: 0;
+}
+
+body.dark-theme .divider::before {
+  border-top-color: #334155;
+}
+
+.divider span {
+  position: relative;
+  z-index: 1;
+  padding: 0 0.75rem;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+body.dark-theme .divider span {
+  background: rgba(15, 23, 42, 0.9);
+}
+
+.format-panel {
+  margin-top: 1rem;
+  padding: 1rem;
+  border-radius: 18px;
+  background: #f8fafc;
+}
+
+body.dark-theme .format-panel {
+  background: #0b1220;
+}
+
+.format-panel pre {
+  margin: 0;
+  overflow-x: auto;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.status-message {
+  min-height: 1.5rem;
+  margin: 1rem 0 0;
+  font-weight: 600;
+}
+
+.status-message.success {
+  color: #15803d;
+}
+
+.status-message.error {
+  color: #b91c1c;
+}
+
+.study-header,
+.deck-table-header,
+.toggle-row,
+.stats-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+}
+
+.toggle-row {
+  font-size: 0.95rem;
+  color: #334155;
+}
+
+body.dark-theme .toggle-row {
+  color: #cbd5e1;
+}
+
+.stats-row {
+  margin: 1rem 0 1.2rem;
+  flex-wrap: wrap;
+}
+
+.stat {
+  min-width: 120px;
+  padding: 0.9rem 1rem;
+  border-radius: 18px;
+  background: #f8fafc;
+}
+
+body.dark-theme .stat {
+  background: #0b1220;
+}
+
+.stat-label {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
+body.dark-theme .stat-label {
+  color: #94a3b8;
+}
+
+.flashcard {
+  width: 100%;
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
+  padding: 2rem;
+  border-radius: 28px;
+  background: linear-gradient(145deg, #1d4ed8, #4f46e5);
+  color: #ffffff;
+  text-align: center;
+  box-shadow: 0 25px 60px rgba(37, 99, 235, 0.28);
+}
+
+.flashcard.is-back {
+  background: linear-gradient(145deg, #0f766e, #0f172a);
+}
+
+.flashcard.is-empty {
+  background: linear-gradient(145deg, #94a3b8, #64748b);
+  box-shadow: none;
+}
+
+.flashcard-label {
+  font-size: clamp(2.3rem, 5vw, 4rem);
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.flashcard-sub-label {
+  max-width: 36rem;
+  font-size: clamp(1.1rem, 2vw, 1.4rem);
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.study-actions {
+  margin: 1rem 0 1.5rem;
+  justify-content: center;
+}
+
+.deck-table-wrap {
+  border-top: 1px solid #e2e8f0;
+  padding-top: 1.25rem;
+}
+
+body.dark-theme .deck-table-wrap {
+  border-top-color: #334155;
+}
+
+.table-scroll {
+  overflow: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 0.85rem 0.75rem;
+  border-bottom: 1px solid #e2e8f0;
+  text-align: left;
+}
+
+body.dark-theme td,
+body.dark-theme th {
+  border-bottom-color: #334155;
+}
+
+th {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+}
+
+body.dark-theme th {
+  color: #94a3b8;
+}
+
+.empty-row {
+  text-align: center;
+  color: #64748b;
+}
+
+body.dark-theme .empty-row {
+  color: #94a3b8;
+}
+
+code {
+  background: #e2e8f0;
+  padding: 0.12rem 0.35rem;
+  border-radius: 6px;
+}
+
+body.dark-theme code {
+  background: #334155;
+}
+
+@media (max-width: 900px) {
+  .grid-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .hero,
+  .study-header,
+  .deck-table-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
